@@ -113,6 +113,7 @@ import codecs
 from io import open
 import itertools
 import math
+import pickle
 
 
 USE_CUDA = torch.cuda.is_available()
@@ -228,35 +229,35 @@ def extractSentencePairs(conversations):
 #
 
 # Define path to new file
-datafile = os.path.join(corpus, "formatted_movie_lines.txt")
-
-delimiter = '\t'
-# Unescape the delimiter
-delimiter = str(codecs.decode(delimiter, "unicode_escape"))
-
-# Initialize lines dict, conversations list, and field ids
-lines = {}
-conversations = []
-MOVIE_LINES_FIELDS = ["lineID", "characterID", "movieID", "character", "text"]
-MOVIE_CONVERSATIONS_FIELDS = ["character1ID", "character2ID", "movieID", "utteranceIDs"]
-
-# Load lines and process conversations
-print("\nProcessing corpus...")
-lines = loadLines(os.path.join(corpus, "movie_lines.txt"), MOVIE_LINES_FIELDS)
-print("\nLoading conversations...")
-conversations = loadConversations(os.path.join(corpus, "movie_conversations.txt"),
-                                  lines, MOVIE_CONVERSATIONS_FIELDS)
-
-# Write new csv file
-print("\nWriting newly formatted file...")
-with open(datafile, 'w', encoding='utf-8') as outputfile:
-    writer = csv.writer(outputfile, delimiter=delimiter)
-    for pair in extractSentencePairs(conversations):
-        writer.writerow(pair)
-
-# Print a sample of lines
-print("\nSample lines from file:")
-printLines(datafile)
+# datafile = os.path.join(corpus, "formatted_movie_lines.txt")
+#
+# delimiter = '\t'
+# # Unescape the delimiter
+# delimiter = str(codecs.decode(delimiter, "unicode_escape"))
+#
+# # Initialize lines dict, conversations list, and field ids
+# lines = {}
+# conversations = []
+# MOVIE_LINES_FIELDS = ["lineID", "characterID", "movieID", "character", "text"]
+# MOVIE_CONVERSATIONS_FIELDS = ["character1ID", "character2ID", "movieID", "utteranceIDs"]
+#
+# # Load lines and process conversations
+# print("\nProcessing corpus...")
+# lines = loadLines(os.path.join(corpus, "movie_lines.txt"), MOVIE_LINES_FIELDS)
+# print("\nLoading conversations...")
+# conversations = loadConversations(os.path.join(corpus, "movie_conversations.txt"),
+#                                   lines, MOVIE_CONVERSATIONS_FIELDS)
+#
+# # Write new csv file
+# print("\nWriting newly formatted file...")
+# with open(datafile, 'w', encoding='utf-8') as outputfile:
+#     writer = csv.writer(outputfile, delimiter=delimiter)
+#     for pair in extractSentencePairs(conversations):
+#         writer.writerow(pair)
+#
+# # Print a sample of lines
+# print("\nSample lines from file:")
+# printLines(datafile)
 
 
 ######################################################################
@@ -395,13 +396,21 @@ def loadPrepareData(corpus, corpus_name, datafile, save_dir):
         voc.addSentence(pair[0])
         voc.addSentence(pair[1])
     print("Counted words:", voc.num_words)
+    pickle.dump(voc, open(os.path.join(save_dir, 'Vocabulary'), 'wb'))
+    pickle.dump(pairs, open(os.path.join(save_dir, 'Preprocessed_data'), 'wb'))
     return voc, pairs
 
 
 # Load/Assemble voc and pairs
 save_dir = os.path.join("data", "save")
-voc, pairs = loadPrepareData(corpus, corpus_name, datafile, save_dir)
-if 
+voc_dir = os.path.join(save_dir, 'Vocabulary')
+processed_data_dir = os.path.join(save_dir, 'Preprocessed_data')
+if os.path.exists(voc_dir) and os.path.exists(processed_data_dir):
+    voc = pickle.load(open(voc_dir, 'rb'))
+    pairs = pickle.load(open(processed_data_dir, 'rb'))
+else:
+    voc, pairs = loadPrepareData(corpus, corpus_name, datafile, save_dir)
+
 # Print some pairs to validate
 print("\npairs:")
 for pair in pairs[:10]:
@@ -1072,7 +1081,7 @@ def trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, deco
                 'loss': loss,
                 'voc_dict': voc.__dict__,
                 'embedding': embedding.state_dict()
-            }, os.path.join(directory, '{}_{}.tar'.format(iteration, 'checkpoint')))
+            }, os.path.join(directory, '{}_{}.pt'.format(iteration, 'checkpoint')))
 
 
 ######################################################################
@@ -1122,7 +1131,7 @@ class GreedySearchDecoder(nn.Module):
         # Forward input through encoder model
         encoder_outputs, encoder_hidden = self.encoder(input_seq, input_length)
         # Prepare encoder's final hidden layer to be first hidden input to the decoder
-        decoder_hidden = encoder_hidden[:decoder.n_layers]
+        decoder_hidden = encoder_hidden[:self.decoder.n_layers]
         # Initialize decoder input with SOS_token
         decoder_input = torch.ones(1, 1, device=device, dtype=torch.long) * SOS_token
         # Initialize tensors to append decoded words to
@@ -1137,6 +1146,8 @@ class GreedySearchDecoder(nn.Module):
             # Record token and score
             all_tokens = torch.cat((all_tokens, decoder_input), dim=0)
             all_scores = torch.cat((all_scores, decoder_scores), dim=0)
+            if decoder_input == EOS_token:
+                break
             # Prepare current token to be next decoder input (add a dimension)
             decoder_input = torch.unsqueeze(decoder_input, 0)
         # Return collections of word tokens and scores
@@ -1237,7 +1248,7 @@ dropout = 0.1
 batch_size = 64
 
 # Set checkpoint to load from; set to None if starting from scratch
-loadFilename = None
+loadFilename = '/Users/TONY/Downloads/machine_learning/nlp/A-chatbot-tutorial/data/save/cb_model/cornell movie-dialogs corpus/2-2_500/2_checkpoint.pt'
 checkpoint_iter = 4000
 #loadFilename = os.path.join(save_dir, model_name, corpus_name,
 #                            '{}-{}_{}'.format(encoder_n_layers, decoder_n_layers, hidden_size),
@@ -1314,6 +1325,7 @@ trainIters(model_name, voc, pairs, encoder, decoder, encoder_optimizer, decoder_
            print_every, save_every, clip, corpus_name, loadFilename)
 
 
+
 ######################################################################
 # Run Evaluation
 # ~~~~~~~~~~~~~~
@@ -1328,20 +1340,14 @@ decoder.eval()
 # Initialize search module
 searcher = GreedySearchDecoder(encoder, decoder)
 
+sources = []
+for i in range(len(pairs)):
+    sources.append([pairs[i][0]])
+for i in range(len(sources)):
+    ai_response = evaluate(encoder, decoder, searcher, voc, sentence=sources[i][0])
+    sources[i].append(ai_response)
+pickle.dump(sources, open('Generated_data', 'wb'))
+
+
 # Begin chatting (uncomment and run the following line to begin)
 # evaluateInput(encoder, decoder, searcher, voc)
-
-
-######################################################################
-# Conclusion
-# ----------
-#
-# That’s all for this one, folks. Congratulations, you now know the
-# fundamentals to building a generative chatbot model! If you’re
-# interested, you can try tailoring the chatbot’s behavior by tweaking the
-# model and training parameters and customizing the data that you train
-# the model on.
-#
-# Check out the other tutorials for more cool deep learning applications
-# in PyTorch!
-#
